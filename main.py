@@ -150,6 +150,45 @@ def lms_peak_detection(signal, fs, mu=0.02, initial_threshold_ratio=0.25, search
 #################################################################################################################################
 #################################################################################################################################
 
+
+#################################################################################################################################
+#########################################>> Evaluate Detected Peaks <<###########################################################
+
+def evaluate_peaks(detected_peaks, true_peaks, fs, tolerance=0.15):
+    tolerance_samples = int(tolerance * fs)
+    TP = 0
+    FN = 0
+    FP = 0
+
+    matched = np.zeros(len(true_peaks), dtype=bool)
+
+    for peak in detected_peaks:
+        match_found = False
+        for i, true_peak in enumerate(true_peaks):
+            if not matched[i] and abs(peak - true_peak) <= tolerance_samples:
+                TP += 1
+                matched[i] = True
+                match_found = True
+                break
+        if not match_found:
+            FP += 1
+
+    FN = len(true_peaks) - TP
+
+    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else 0
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0
+    f1 = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
+
+    return {
+        'TP': TP, 'FP': FP, 'FN': FN,
+        'Sensitivity': round(sensitivity, 3),
+        'Precision': round(precision, 3),
+        'F1 Score': round(f1, 3)
+    }
+
+#################################################################################################################################
+#################################################################################################################################
+
 #################################################################################################################################
 #########################################>> Plot Functions <<####################################################################
 
@@ -274,23 +313,32 @@ def Pan_Tompkins(path, title):
     beats = len([p for p in peaks if p < fs * 5])
     print(f"Detected QRS peaks in {title}: {beats} beats in 5 seconds")
 
-    return beats
+    return beats, peaks, lms_peaks, fs
 
 
 
 if __name__ == '__main__':
+    clean_path = "data/clean_signals/101"
+    noisy_path = "data/noisy_signals/108"
 
+    print("----- Clean ECG -----")
+    clean_beats, clean_static_peaks, clean_lms_peaks, fs = Pan_Tompkins(clean_path, "Clean ECG")
 
-        clean_path = "data/clean_signals/101"   # -> load clean data path
-        noisy_path = "data/noisy_signals/108"   # -> load noisy data path
+    print("\n----- Noisy ECG -----")
+    noisy_beats, noisy_static_peaks, noisy_lms_peaks, _ = Pan_Tompkins(noisy_path, "Noisy ECG")
 
-        print("----- Clean ECG -----")
-        clean_beats = Pan_Tompkins(clean_path, "Clean ECG")
+    # Load reference annotations
+    ann_clean = wfdb.rdann(clean_path, 'atr')
+    ann_noisy = wfdb.rdann(noisy_path, 'atr')
 
-        print("\n----- Noisy ECG -----")
-        noisy_beats = Pan_Tompkins(noisy_path, "Noisy ECG")
+    print("\n===== Evaluation: Clean Signal (101) =====")
+    print("Static:", evaluate_peaks(clean_static_peaks, ann_clean.sample, fs))
+    print("LMS   :", evaluate_peaks(clean_lms_peaks, ann_clean.sample, fs))
 
+    print("\n===== Evaluation: Noisy Signal (108) =====")
+    print("Static:", evaluate_peaks(noisy_static_peaks, ann_noisy.sample, fs))
+    print("LMS   :", evaluate_peaks(noisy_lms_peaks, ann_noisy.sample, fs))
 
-        print("\n----- Comparison -----")
-        print(f"Clean beats: {clean_beats}")
-        print(f"Noisy beats: {noisy_beats}")
+    print("\n----- Comparison -----")
+    print(f"Clean beats: {clean_beats}")
+    print(f"Noisy beats: {noisy_beats}")
