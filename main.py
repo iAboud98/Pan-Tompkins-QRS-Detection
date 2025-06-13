@@ -109,43 +109,28 @@ def detect_peaks(signal, fs):
 
 
 # -> LMS Adaptive Threshold Peak Detection
-def lms_peak_detection(signal, fs, mu=0.02, initial_threshold_ratio=0.25, search_window_ms=100):
-    signal = np.asarray(signal)
-    initial_peak = np.max(signal[:fs]) 
-    threshold = initial_threshold_ratio * initial_peak
+def lms_peak_detection(signal, fs=200, mu=0.01, window_size=150):
+    """
+    LMS-based adaptive thresholding that tracks signal envelope
+    and returns peak locations and threshold vector.
+    """
+    threshold = np.zeros_like(signal)
+    error = np.zeros_like(signal)
 
-    min_distance = int(0.2 * fs)
-    search_window = int(search_window_ms * fs / 1000)
+    weight = np.mean(signal[:window_size])
+    alpha = 0.1  # smoothing factor
 
-    peaks = []
-    thresholds = []
+    for i in range(len(signal)):
+        if i >= window_size:
+            window_max = np.max(signal[i - window_size:i])
+            error[i] = window_max - weight
+            weight += mu * error[i]
 
-    i = 0
-    last_peak = -2 * min_distance
+        threshold[i] = alpha * weight + (1 - alpha) * threshold[i - 1] if i > 0 else weight
 
-    while i < len(signal) - search_window:
-        y = signal[i]
+    peaks, _ = find_peaks(signal, height=threshold, distance=int(0.2 * fs))
+    return peaks, threshold
 
-        if (i - last_peak) > min_distance and y > threshold:
-            window_end = min(i + search_window, len(signal))
-            local_max_index = np.argmax(signal[i:window_end]) + i
-            peaks.append(local_max_index)
-            last_peak = local_max_index
-
-            error = signal[local_max_index] - threshold
-            threshold += mu * error
-            threshold = np.clip(threshold, 0.05 * initial_peak, 0.8 * initial_peak)
-
-            i = local_max_index + 1
-        else:
-            error = 0
-            threshold += mu * error
-            threshold = np.clip(threshold, 0.05 * initial_peak, 0.8 * initial_peak)
-            i += 1
-
-        thresholds.append(threshold)
-
-    return peaks, thresholds
 
 #################################################################################################################################
 #################################################################################################################################
@@ -223,29 +208,33 @@ def plot_filter_response(fs, b, a, title):
     plt.tight_layout(); plt.show()
 
 
-def plot_with_peaks(signal, fs, peaks, threshold):
-    t = [i / fs for i in range(len(signal))]
+def plot_with_peaks(signal, fs, peaks, threshold, time_window_sec=5):
+    t = np.arange(len(signal)) / fs
+    end = int(fs * time_window_sec)
+
     plt.figure(figsize=(10, 4))
-
-    end = int(fs * 5)
-
-    peaks_in_range = [p for p in peaks if p < end]
 
     plt.plot(t[:end], signal[:end], label='Integrated Signal', color='green')
 
+    peaks_in_range = [p for p in peaks if p < end]
     plt.plot([t[p] for p in peaks_in_range],
              [signal[p] for p in peaks_in_range],
              'ro', label='Detected Peaks')
 
-    plt.axhline(y=threshold, color='gray', linestyle='--', label='Threshold')
+    if isinstance(threshold, (int, float)):
+        plt.axhline(y=threshold, color='gray', linestyle='--', label='Static Threshold')
+    else:
+        plt.plot(t[:end], threshold[:end], color='gray', linestyle='--', label='Adaptive Threshold')
 
-    plt.title("QRS Detection - Peaks over Threshold (First 5 seconds)")
+    plt.title(f"QRS Detection - First {time_window_sec} Seconds")
     plt.xlabel("Time (s)")
     plt.ylabel("Amplitude")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+
+    
 
 #################################################################################################################################
 #################################################################################################################################
@@ -305,7 +294,8 @@ def Pan_Tompkins(path, title):
     plot_with_peaks(integrated, fs, peaks, threshold)
 
     lms_peaks, threshold_trace = lms_peak_detection(integrated, fs)
-    plot_with_peaks(integrated, fs, lms_peaks, threshold_trace[-1])
+    plot_with_peaks(integrated, fs, lms_peaks, threshold_trace, time_window_sec=10)
+
 
 
 
