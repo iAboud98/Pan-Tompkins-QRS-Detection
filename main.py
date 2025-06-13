@@ -2,7 +2,7 @@ import wfdb
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, freqz, tf2zpk, group_delay, lfilter
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, convolve
 
 #################################################################################################################################
 #####################################>> load ECG Signal <<#######################################################################
@@ -81,16 +81,71 @@ def moving_window_integration(signal, window_size):
 #################################################################################################################################
 #########################################>> Detect ECG Signal Peaks<<############################################################
 
-def detect_peaks(signal,fs):
-    mean_val = np.mean(signal)
-    std_val = np.std(signal)
-    threshold = mean_val + 0.5 * std_val
-
+# -> Pan-Tompkins Peak Detection
+def detect_peaks(signal, fs):
     min_distance = int(0.2 * fs)
 
-    peaks, _ = find_peaks(signal, height=threshold, distance=min_distance)
+    peaks, _ = find_peaks(signal, distance=min_distance)
 
-    return peaks, threshold
+    SPKI = 0.0
+    NPKI = 0.0
+    THRESHOLD_I1 = 0.0
+
+    qrs_peaks = []
+
+    for peak in peaks:
+        PEAKI = signal[peak]
+
+        if PEAKI > THRESHOLD_I1:
+            qrs_peaks.append(peak)
+            SPKI = 0.125 * PEAKI + 0.875 * SPKI
+        else:
+            NPKI = 0.125 * PEAKI + 0.875 * NPKI
+
+        THRESHOLD_I1 = NPKI + 0.25 * (SPKI - NPKI)
+
+    return qrs_peaks, THRESHOLD_I1
+
+
+
+# -> LMS Adaptive Threshold Peak Detection
+def lms_peak_detection(signal, fs, mu=0.02, initial_threshold_ratio=0.25, search_window_ms=100):
+    signal = np.asarray(signal)
+    initial_peak = np.max(signal[:fs]) 
+    threshold = initial_threshold_ratio * initial_peak
+
+    min_distance = int(0.2 * fs)
+    search_window = int(search_window_ms * fs / 1000)
+
+    peaks = []
+    thresholds = []
+
+    i = 0
+    last_peak = -2 * min_distance
+
+    while i < len(signal) - search_window:
+        y = signal[i]
+
+        if (i - last_peak) > min_distance and y > threshold:
+            window_end = min(i + search_window, len(signal))
+            local_max_index = np.argmax(signal[i:window_end]) + i
+            peaks.append(local_max_index)
+            last_peak = local_max_index
+
+            error = signal[local_max_index] - threshold
+            threshold += mu * error
+            threshold = np.clip(threshold, 0.05 * initial_peak, 0.8 * initial_peak)
+
+            i = local_max_index + 1
+        else:
+            error = 0
+            threshold += mu * error
+            threshold = np.clip(threshold, 0.05 * initial_peak, 0.8 * initial_peak)
+            i += 1
+
+        thresholds.append(threshold)
+
+    return peaks, thresholds
 
 #################################################################################################################################
 #################################################################################################################################
@@ -116,7 +171,7 @@ def plot_filter_response(fs, b, a, title):
     z, p, _ = tf2zpk(b, a)
     gd_freq, gd = group_delay((b, a), fs=fs)
 
-    fig, axs = plt.subplots(2, 2, figsize=(12, 8))
+    fig, axs = plt.subplots(2, 2, figsize=(10, 4))
     axs[0, 0].plot(w, 20 * np.log10(np.abs(h)))
     axs[0, 0].set_title(f'{title} - Magnitude')
     axs[0, 1].plot(w, np.angle(h))
@@ -131,7 +186,7 @@ def plot_filter_response(fs, b, a, title):
 
 def plot_with_peaks(signal, fs, peaks, threshold):
     t = [i / fs for i in range(len(signal))]
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(10, 4))
 
     end = int(fs * 5)
 
@@ -175,7 +230,19 @@ def Pan_Tompkins(path, title):
     plot_filter_response(fs, [1] + [0]*5 + [-2] + [0]*5 + [1], [1, -2, 1], "Lowpass")
     plot_filter_response(fs, np.pad([-1] + [0]*15 + [32] + [0]*15 + [1], (0, 0)), [1, 1], "Highpass")
 
+    # Define LP and HP filter coefficients (same as your code)
+    b_lp = [1, 0, 0, 0, 0, 0, -2, 0, 0, 0, 0, 0, 1]
+    a_lp = [1, -2, 1]
 
+    b_hp = np.zeros(33)
+    b_hp[0], b_hp[16], b_hp[32] = -1, 32, 1
+    a_hp = [1, 1]
+
+    # Combine them (LP followed by HP)
+    b_bp = convolve(b_lp, b_hp)
+    a_bp = convolve(a_lp, a_hp)
+
+    plot_filter_response(fs, b_bp, a_bp, "Bandpass Filter (LP + HP)")
 
     #Second Stage : Differentiator
     deriv = derivative(hp_filtered)
@@ -184,7 +251,7 @@ def Pan_Tompkins(path, title):
 
     #Third Stage : Squaring
     squared = squaring(deriv)
-    plot_signal(squared, fs, f"{title} - Squaring", "yellow")
+    plot_signal(squared, fs, f"{title} - Squaring", "green")
 
     #Fourth Stage : Integration
     window_size = int(0.150 * fs)
@@ -197,6 +264,11 @@ def Pan_Tompkins(path, title):
     #Fifth Stage : Peak Detection
     peaks, threshold = detect_peaks(integrated, fs)
     plot_with_peaks(integrated, fs, peaks, threshold)
+
+    lms_peaks, threshold_trace = lms_peak_detection(integrated, fs)
+    plot_with_peaks(integrated, fs, lms_peaks, threshold_trace[-1])
+
+
 
     #Compare the number of beats detected in the first 5 seconds
     beats = len([p for p in peaks if p < fs * 5])
